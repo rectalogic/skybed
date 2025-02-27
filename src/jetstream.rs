@@ -1,8 +1,4 @@
-use atrium_api::{
-    app::bsky::feed::post::RecordData,
-    record::KnownRecord::AppBskyFeedPost,
-    types::{Object, string},
-};
+use atrium_api::{app::bsky::feed::post, record::KnownRecord::AppBskyFeedPost, types::string};
 
 use jetstream_oxide::{
     JetstreamConfig, JetstreamConnector, JetstreamReceiver,
@@ -28,7 +24,7 @@ impl Jetstream {
         })
     }
 
-    pub async fn recv(&mut self) -> anyhow::Result<Box<Object<RecordData>>> {
+    pub async fn recv(&mut self) -> anyhow::Result<Box<post::Record>> {
         loop {
             let event = self.receiver.recv_async().await?;
             if let Commit(CommitEvent::Create { info: _, commit }) = event {

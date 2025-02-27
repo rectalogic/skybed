@@ -27,7 +27,7 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let language = string::Language::new(args.language).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let mut embeddings = Embeddings::try_new(args.query).await?;
+    let embeddings = Embeddings::try_new(args.query, args.threshold).await?;
 
     let dids = args.did.unwrap_or_default();
     println!("Listening for '{:?}' events on DIDs: {:?}", args.nsid, dids);
@@ -38,16 +38,14 @@ async fn main() -> anyhow::Result<()> {
         ..JetstreamConfig::default()
     };
     let mut jetstream = Jetstream::connect(config, language).await?;
-    while let Ok(mut record) = jetstream.recv().await {
+    while let Ok(record) = jetstream.recv().await {
         if jetstream.count() % LOG_COUNT == 0 {
             eprintln!("{} posts", jetstream.count());
         }
-        if embeddings.count() % LOG_COUNT == 0 {
-            eprintln!("{} embeddings", embeddings.count());
-        }
-        let similarity = embeddings.add_message(&mut record.text).await?;
-        if similarity >= args.threshold {
-            println!("{}", record.text);
+        embeddings.add_post(record)?;
+        let count = embeddings.count();
+        if count % LOG_COUNT == 0 {
+            eprintln!("{} embeddings", count);
         }
     }
     Ok(())
