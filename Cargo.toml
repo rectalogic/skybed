@@ -1,0 +1,15 @@
+[package]
+name = "skybed"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.96"
+clap = { version = "4.5.31", features = ["derive"] }
+jetstream-oxide = "0.1.1"
+atrium-api = { version = "0.24.7", default-features = false, features = [
+    "namespace-appbsky",
+] }
+tokio = { version = "1.41.1", features = ["full", "sync", "time"] }
+fastembed = "4.5.0"
+ndarray = "0.16.1"
