@@ -24,10 +24,10 @@ impl Jetstream {
         })
     }
 
-    pub async fn recv(&mut self) -> anyhow::Result<Box<post::Record>> {
+    pub async fn recv(&mut self) -> anyhow::Result<(string::Did, Box<post::Record>)> {
         loop {
             let event = self.receiver.recv_async().await?;
-            if let Commit(CommitEvent::Create { info: _, commit }) = event {
+            if let Commit(CommitEvent::Create { info, commit }) = event {
                 if let AppBskyFeedPost(record) = commit.record {
                     if record.text.is_empty() {
                         continue;
@@ -36,7 +36,7 @@ impl Jetstream {
                         Some(languages) => {
                             if languages.contains(&self.language) {
                                 self.count += 1;
-                                return Ok(record);
+                                return Ok((info.did, record));
                             } else {
                                 continue;
                             }
