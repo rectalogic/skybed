@@ -1,68 +1,32 @@
-mod search;
-use std::{
-    iter::zip,
-    sync::mpsc,
-    thread::{self, JoinHandle},
-};
-
-use crate::LOG_COUNT;
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
-use search::{EmbeddingText, Search};
+use rbert::{Bert, EmbedderExt, Embedding};
 
 pub struct Embeddings {
-    tx: mpsc::Sender<String>,
-    join: JoinHandle<Result<(), anyhow::Error>>,
+    bert: Bert,
+    query: Embedding,
+    count: usize,
 }
 
 impl Embeddings {
-    pub fn try_new<S>(query: S, threshold: f32) -> anyhow::Result<Self>
+    pub async fn try_new<S>(query: S) -> anyhow::Result<Self>
     where
-        S: AsRef<str> + Send + Sync,
+        S: ToString,
     {
-        let model = TextEmbedding::try_new(
-            InitOptions::new(EmbeddingModel::ModernBertEmbedLarge)
-                .with_show_download_progress(true),
-        )?;
-        let query_embedding = model.embed(vec![query], None)?.into_iter().next().unwrap();
-        let (tx, rx) = mpsc::channel::<String>();
-        let join = thread::spawn(move || -> anyhow::Result<()> {
-            const MAX_CAPACITY: usize = 128;
-            let mut count: usize = 0;
-            let mut search = Search::new(query_embedding, threshold);
-            let mut messages = Vec::with_capacity(MAX_CAPACITY);
-            while let Ok(message) = rx.recv() {
-                if messages.len() == messages.capacity() {
-                    let embedding_result =
-                        model.embed(messages.iter().collect::<Vec<_>>(), Some(MAX_CAPACITY / 4))?;
-                    search.search(
-                        zip(embedding_result, messages)
-                            .map(|(embedding, message)| EmbeddingText::new(embedding, message))
-                            .collect::<Vec<_>>(),
-                    )?;
-                    if search.count() - count >= LOG_COUNT {
-                        eprintln!("{} embeddings", search.count());
-                        count = search.count()
-                    }
-                    messages = Vec::with_capacity(MAX_CAPACITY);
-                } else {
-                    messages.push(message);
-                }
-            }
-            search.join()
-        });
-        Ok(Self { tx, join })
+        let bert = Bert::new().await?;
+        let embedding = bert.embed(query).await?;
+        Ok(Self {
+            bert,
+            query: embedding,
+            count: 0,
+        })
     }
 
-    pub fn add_message(&self, message: String) -> Result<(), anyhow::Error> {
-        self.tx.send(message)?;
-        Ok(())
+    pub fn count(&self) -> usize {
+        self.count
     }
 
-    pub fn join(self) -> Result<(), anyhow::Error> {
-        self.join
-            .join()
-            .map_err(|e| anyhow::anyhow!("Thread join error: {:?}", e))?
-            .map_err(|e| anyhow::anyhow!("Thread error: {}", e))?;
-        Ok(())
+    pub async fn add_message<S: ToString>(&mut self, message: S) -> Result<f32, anyhow::Error> {
+        let embedding = self.bert.embed(message).await?;
+        self.count += 1;
+        Ok(embedding.cosine_similarity(&self.query))
     }
 }

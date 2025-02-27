@@ -26,12 +26,11 @@ struct Args {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
-
     let language = string::Language::new(args.language).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let embeddings = Embeddings::try_new(args.query, args.threshold)?;
+    let mut embeddings = Embeddings::try_new(args.query).await?;
 
     let dids = args.did.unwrap_or_default();
-    println!("Listening for '{:?}' events on DIDs: {:?}", args.nsid, dids,);
+    println!("Listening for '{:?}' events on DIDs: {:?}", args.nsid, dids);
     let config = JetstreamConfig {
         wanted_collections: vec![args.nsid.clone()],
         wanted_dids: dids,
@@ -43,8 +42,13 @@ async fn main() -> anyhow::Result<()> {
         if jetstream.count() % LOG_COUNT == 0 {
             eprintln!("{} posts", jetstream.count());
         }
-        embeddings.add_message(std::mem::take(&mut record.text))?;
+        if embeddings.count() % LOG_COUNT == 0 {
+            eprintln!("{} embeddings", embeddings.count());
+        }
+        let similarity = embeddings.add_message(&mut record.text).await?;
+        if similarity >= args.threshold {
+            println!("{}", record.text);
+        }
     }
-
-    embeddings.join()
+    Ok(())
 }
