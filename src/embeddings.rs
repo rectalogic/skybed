@@ -1,6 +1,6 @@
 use atrium_api::{app::bsky::feed::post, types::string};
 use flume::Sender;
-use rbert::{Bert, EmbedderExt, Pooling};
+use rbert::{Bert, BertSource, EmbedderExt, Pooling};
 use std::{
     sync::{
         Arc,
@@ -23,7 +23,12 @@ impl Embeddings {
             .map(|p| p.get())
             .unwrap_or(2);
 
-        let bert = Arc::new(Bert::new().await?);
+        let bert = Arc::new(
+            Bert::builder()
+                .with_source(BertSource::mini_lm_l6_v2())
+                .build()
+                .await?,
+        );
 
         // ModernBERT fails with "Error: Failed to load config: missing field `hidden_act` at line 44 column 1"
         // config.json uses `hidden_activation` instead of `hidden_act`
