@@ -1,6 +1,7 @@
 use atrium_api::{app::bsky::feed::post, types::string};
+use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use flume::Sender;
-use rbert::{Bert, BertSource, EmbedderExt, Pooling};
+use ndarray::ArrayView1;
 use std::{
     sync::{
         Arc,
@@ -15,63 +16,36 @@ pub struct Embeddings {
 }
 
 impl Embeddings {
-    pub async fn try_new<S>(query: S, threshold: f32) -> anyhow::Result<Self>
+    pub fn try_new<S>(query: S, threshold: f32) -> anyhow::Result<Self>
     where
-        S: ToString,
+        S: AsRef<str> + Send + Sync,
     {
         let thread_count = thread::available_parallelism()
             .map(|p| p.get())
             .unwrap_or(2);
 
-        let bert = Arc::new(
-            Bert::builder()
-                .with_source(BertSource::mini_lm_l6_v2())
-                .build()
-                .await?,
-        );
-
-        // ModernBERT fails with "Error: Failed to load config: missing field `hidden_act` at line 44 column 1"
-        // config.json uses `hidden_activation` instead of `hidden_act`
-        #[cfg(any())]
-        let bert = Arc::new(
-            Bert::builder()
-                .with_source(
-                    BertSource::default()
-                        .with_model(FileSource::huggingface(
-                            "answerdotai/ModernBERT-base".to_string(),
-                            "8949b909ec900327062f0ebf497f51aef5e6f0c8".to_string(),
-                            "model.safetensors".to_string(),
-                        ))
-                        .with_tokenizer(FileSource::huggingface(
-                            "answerdotai/ModernBERT-base".to_string(),
-                            "8949b909ec900327062f0ebf497f51aef5e6f0c8".to_string(),
-                            "tokenizer.json".to_string(),
-                        ))
-                        .with_config(FileSource::huggingface(
-                            "answerdotai/ModernBERT-base".to_string(),
-                            "8949b909ec900327062f0ebf497f51aef5e6f0c8".to_string(),
-                            "config.json".to_string(),
-                        )),
-                )
-                .build()
-                .await?,
-        );
-        let query = Arc::new(bert.embed(query).await?);
+        let model = Arc::new(TextEmbedding::try_new(
+            InitOptions::new(EmbeddingModel::ModernBertEmbedLarge)
+                .with_show_download_progress(true),
+        )?);
+        let query = Arc::new(model.embed(vec![query], None)?.into_iter().next().unwrap());
         let post_count = Arc::new(AtomicUsize::new(0));
         let (tx, rx) = flume::unbounded::<(string::Did, Box<post::Record>)>();
 
         for _ in 0..thread_count {
-            let bert = bert.clone();
+            let model = model.clone();
             let query = query.clone();
             let post_count = post_count.clone();
             let rx = rx.clone();
             thread::spawn(move || {
                 while let Ok((did, post)) = rx.recv() {
-                    if let Ok(embedding) = bert.embed_with_pooling(&post.text, Pooling::CLS) {
-                        if embedding.cosine_similarity(&query) > threshold {
-                            println!("{}:\n{}", did.as_str(), post.text);
+                    if let Ok(embedding_vec) = model.embed(vec![&post.text], None) {
+                        if let Some(embedding) = embedding_vec.first() {
+                            if cosine_similarity(&query, embedding) > threshold {
+                                println!("{}:\n{}", did.as_str(), post.text);
+                            }
+                            post_count.fetch_add(1, Ordering::Relaxed);
                         }
-                        post_count.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             });
@@ -90,4 +64,15 @@ impl Embeddings {
         self.tx.send((did, post))?;
         Ok(())
     }
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let a = ArrayView1::from(a);
+    let b = ArrayView1::from(b);
+
+    let dot_product = a.dot(&b);
+    let norm_a = a.dot(&a).sqrt();
+    let norm_b = b.dot(&b).sqrt();
+
+    dot_product / (norm_a * norm_b)
 }
