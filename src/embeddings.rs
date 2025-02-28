@@ -78,14 +78,18 @@ impl Embeddings {
             let rx = rx.clone();
             thread::spawn(move || {
                 while let Ok((did, post)) = rx.recv() {
-                    if let Ok(embedding) = embed(&model, &tokenizer, &post.text, &device) {
-                        if let Ok(similarity) = cosine_similarity(&query, &embedding) {
-                            if similarity > threshold {
-                                println!("{}:\n{}", did.as_str(), post.text);
+                    match embed(&model, &tokenizer, &post.text, &device) {
+                        Ok(embedding) => match cosine_similarity(&query, &embedding) {
+                            Ok(similarity) => {
+                                if similarity > threshold {
+                                    println!("{}:\n{}", did.as_str(), post.text);
+                                }
                             }
-                        }
-                        post_count.fetch_add(1, Ordering::Relaxed);
+                            Err(e) => eprintln!("Error calculating cosine similarity: {}", e),
+                        },
+                        Err(e) => eprintln!("Error embedding: {}", e),
                     }
+                    post_count.fetch_add(1, Ordering::Relaxed);
                 }
             });
         }
@@ -133,13 +137,12 @@ fn cosine_similarity(a: &Tensor, b: &Tensor) -> Result<f32> {
     let a = a.reshape((a.elem_count(),))?;
     let b = b.reshape((b.elem_count(),))?;
 
-    let dot_product = a.matmul(&b.unsqueeze(1)?)?.squeeze(1)?;
+    let dot_product = (&a * &b)?.sum_all()?;
 
     let a_norm = a.sqr()?.sum_all()?.sqrt()?;
     let b_norm = b.sqr()?.sum_all()?.sqrt()?;
 
     let norm_product = a_norm.mul(&b_norm)?;
-
     let similarity = dot_product.div(&norm_product)?.to_scalar()?;
 
     Ok(similarity)
