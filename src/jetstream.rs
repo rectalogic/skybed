@@ -29,7 +29,7 @@ impl Jetstream {
             let event = self.receiver.recv_async().await?;
             if let Commit(CommitEvent::Create { info, commit }) = event {
                 if let AppBskyFeedPost(record) = commit.record {
-                    if record.text.is_empty() {
+                    if record.text.trim().len() < 10 {
                         continue;
                     }
                     match &record.langs {

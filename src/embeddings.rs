@@ -44,18 +44,25 @@ impl Embeddings {
             VarBuilder::from_mmaped_safetensors(
                 &[weights_filename],
                 candle_core::DType::F32,
-                &device, //XXX test metal/cuda
+                &device,
             )?
         };
 
+        // Max BlueSky post length
+        let max_post_length: usize = 300.min(config.max_position_embeddings);
         let mut tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
         tokenizer
             .with_padding(Some(PaddingParams {
-                strategy: tokenizers::PaddingStrategy::BatchLongest,
+                strategy: tokenizers::PaddingStrategy::Fixed(max_post_length),
                 pad_id: config.pad_token_id,
                 ..Default::default()
             }))
-            .with_truncation(None)
+            .with_truncation(Some(tokenizers::TruncationParams {
+                max_length: max_post_length,
+                strategy: tokenizers::TruncationStrategy::LongestFirst,
+                stride: 0,
+                ..Default::default()
+            }))
             .map_err(E::msg)?;
         let tokenizer = Arc::new(tokenizer);
 
@@ -129,21 +136,40 @@ fn embed(
 
     let embeddings = model.forward(&token_ids, &attention_mask)?;
 
-    // Use the [CLS] token embedding (first token)
-    Ok(embeddings.get(0)?.get(0)?)
+    // Mean pooling with attention mask
+    // First, expand attention mask to match embedding dimensions
+    let (_batch_size, seq_len, hidden_size) = embeddings.dims3()?;
+
+    // Sum the embeddings (for each position where attention_mask is 1)
+    // First convert attention_mask to same dtype as embeddings
+    let attention_mask_f = attention_mask.to_dtype(embeddings.dtype())?;
+
+    // Reshape attention mask for broadcasting
+    let attention_mask_expanded =
+        attention_mask_f
+            .unsqueeze(2)?
+            .broadcast_as((1, seq_len, hidden_size))?;
+
+    // Apply mask (zeros out padding tokens)
+    let masked_embeddings = embeddings.mul(&attention_mask_expanded)?;
+
+    // Sum embeddings and mask values
+    let summed = masked_embeddings.sum(1)?;
+    let mask_sum = attention_mask_f.sum(1)?.unsqueeze(1)?;
+
+    // Average = sum(masked_embeddings) / sum(mask)
+    let mean_pooled = summed.broadcast_div(&mask_sum)?;
+
+    // L2 normalize
+    let norm = mean_pooled.sqr()?.sum_all()?.sqrt()?;
+    let normalized = mean_pooled.broadcast_div(&norm)?;
+
+    Ok(normalized.reshape((hidden_size,))?)
 }
 
 fn cosine_similarity(a: &Tensor, b: &Tensor) -> Result<f32> {
-    let a = a.reshape((a.elem_count(),))?;
-    let b = b.reshape((b.elem_count(),))?;
-
-    let dot_product = (&a * &b)?.sum_all()?;
-
-    let a_norm = a.sqr()?.sum_all()?.sqrt()?;
-    let b_norm = b.sqr()?.sum_all()?.sqrt()?;
-
-    let norm_product = a_norm.mul(&b_norm)?;
-    let similarity = dot_product.div(&norm_product)?.to_scalar()?;
-
-    Ok(similarity)
+    let sum_ab = (a * b)?.sum_all()?.to_scalar::<f32>()?;
+    let sum_a = (a * a)?.sum_all()?.to_scalar::<f32>()?;
+    let sum_b = (b * b)?.sum_all()?.to_scalar::<f32>()?;
+    Ok(sum_ab / (sum_a * sum_b).sqrt())
 }
