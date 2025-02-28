@@ -38,11 +38,11 @@ async fn main() -> anyhow::Result<()> {
         ..JetstreamConfig::default()
     };
     let mut jetstream = Jetstream::connect(config, language).await?;
-    while let Ok((did, record)) = jetstream.recv().await {
+    while let Ok(post) = jetstream.recv().await {
         if jetstream.count() % LOG_COUNT == 0 {
             eprintln!("{} posts", jetstream.count());
         }
-        embeddings.add_post((did, record))?;
+        embeddings.add_post(post)?;
         let count = embeddings.count();
         if count % LOG_COUNT == 0 {
             eprintln!("{} embeddings", count);

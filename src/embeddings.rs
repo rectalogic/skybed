@@ -1,5 +1,4 @@
 use anyhow::{Error as E, Result};
-use atrium_api::{app::bsky::feed::post, types::string};
 use candle_core::{Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::modernbert;
@@ -12,10 +11,12 @@ use std::{
     },
     thread,
 };
-use tokenizers::{PaddingParams, Tokenizer};
+use tokenizers::Tokenizer;
+
+use crate::jetstream::PostInfo;
 
 pub struct Embeddings {
-    tx: Sender<(string::Did, Box<post::Record>)>,
+    tx: Sender<PostInfo>,
     count: Arc<AtomicUsize>,
 }
 
@@ -26,7 +27,7 @@ impl Embeddings {
     {
         let api = Api::new()?;
         let repo = api.repo(Repo::with_revision(
-            "answerdotai/ModernBERT-base".to_string(),
+            "answerdotai/ModernBERT-large".to_string(),
             RepoType::Model,
             "main".to_string(),
         ));
@@ -38,8 +39,9 @@ impl Embeddings {
         let config = std::fs::read_to_string(config_filename)?;
         let config: modernbert::Config = serde_json::from_str(&config)?;
 
-        //XXX let device = candle_examples::device(args.cpu)?;
-        let device = Arc::new(Device::Cpu); //XXX test metal/cuda
+        // https://github.com/huggingface/candle/issues/2637
+        // let device = Arc::new(Device::new_metal(0)?);
+        let device = Arc::new(Device::Cpu); //XXX test metal/cuda - has thread issues
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(
                 &[weights_filename],
@@ -48,21 +50,10 @@ impl Embeddings {
             )?
         };
 
-        // Max BlueSky post length
-        let max_post_length: usize = 300.min(config.max_position_embeddings);
         let mut tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
         tokenizer
-            .with_padding(Some(PaddingParams {
-                strategy: tokenizers::PaddingStrategy::Fixed(max_post_length),
-                pad_id: config.pad_token_id,
-                ..Default::default()
-            }))
-            .with_truncation(Some(tokenizers::TruncationParams {
-                max_length: max_post_length,
-                strategy: tokenizers::TruncationStrategy::LongestFirst,
-                stride: 0,
-                ..Default::default()
-            }))
+            .with_padding(None)
+            .with_truncation(None)
             .map_err(E::msg)?;
         let tokenizer = Arc::new(tokenizer);
 
@@ -74,7 +65,7 @@ impl Embeddings {
 
         let query = Arc::new(embed(&model, &tokenizer, query.as_ref(), &device)?);
         let post_count = Arc::new(AtomicUsize::new(0));
-        let (tx, rx) = flume::unbounded::<(string::Did, Box<post::Record>)>();
+        let (tx, rx) = flume::unbounded::<PostInfo>();
 
         for _ in 0..thread_count {
             let model = model.clone();
@@ -84,12 +75,17 @@ impl Embeddings {
             let post_count = post_count.clone();
             let rx = rx.clone();
             thread::spawn(move || {
-                while let Ok((did, post)) = rx.recv() {
-                    match embed(&model, &tokenizer, &post.text, &device) {
+                while let Ok(post) = rx.recv() {
+                    match embed(&model, &tokenizer, &post.record.text, &device) {
                         Ok(embedding) => match cosine_similarity(&query, &embedding) {
                             Ok(similarity) => {
                                 if similarity > threshold {
-                                    println!("{}:\n{}", did.as_str(), post.text);
+                                    println!(
+                                        "\n{}\nhttps://bsky.app/profile/{}/post/{}",
+                                        post.record.text,
+                                        post.did.as_str(),
+                                        post.rkey,
+                                    );
                                 }
                             }
                             Err(e) => eprintln!("Error calculating cosine similarity: {}", e),
@@ -110,8 +106,8 @@ impl Embeddings {
         self.count.load(Ordering::Relaxed)
     }
 
-    pub fn add_post(&self, (did, post): (string::Did, Box<post::Record>)) -> anyhow::Result<()> {
-        self.tx.send((did, post))?;
+    pub fn add_post(&self, post: PostInfo) -> anyhow::Result<()> {
+        self.tx.send(post)?;
         Ok(())
     }
 }
@@ -136,35 +132,13 @@ fn embed(
 
     let embeddings = model.forward(&token_ids, &attention_mask)?;
 
-    // Mean pooling with attention mask
-    // First, expand attention mask to match embedding dimensions
-    let (_batch_size, seq_len, hidden_size) = embeddings.dims3()?;
+    // [CLS] token
+    let cls_embedding = embeddings.get(0)?.get(0)?;
+    normalize_l2(&cls_embedding)
+}
 
-    // Sum the embeddings (for each position where attention_mask is 1)
-    // First convert attention_mask to same dtype as embeddings
-    let attention_mask_f = attention_mask.to_dtype(embeddings.dtype())?;
-
-    // Reshape attention mask for broadcasting
-    let attention_mask_expanded =
-        attention_mask_f
-            .unsqueeze(2)?
-            .broadcast_as((1, seq_len, hidden_size))?;
-
-    // Apply mask (zeros out padding tokens)
-    let masked_embeddings = embeddings.mul(&attention_mask_expanded)?;
-
-    // Sum embeddings and mask values
-    let summed = masked_embeddings.sum(1)?;
-    let mask_sum = attention_mask_f.sum(1)?.unsqueeze(1)?;
-
-    // Average = sum(masked_embeddings) / sum(mask)
-    let mean_pooled = summed.broadcast_div(&mask_sum)?;
-
-    // L2 normalize
-    let norm = mean_pooled.sqr()?.sum_all()?.sqrt()?;
-    let normalized = mean_pooled.broadcast_div(&norm)?;
-
-    Ok(normalized.reshape((hidden_size,))?)
+pub fn normalize_l2(v: &Tensor) -> Result<Tensor, anyhow::Error> {
+    Ok(v.broadcast_div(&v.sqr()?.sum_keepdim(1)?.sqrt()?)?)
 }
 
 fn cosine_similarity(a: &Tensor, b: &Tensor) -> Result<f32> {

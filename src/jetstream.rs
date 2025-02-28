@@ -11,6 +11,12 @@ pub struct Jetstream {
     count: usize,
 }
 
+pub struct PostInfo {
+    pub did: string::Did,
+    pub rkey: String,
+    pub record: Box<post::Record>,
+}
+
 impl Jetstream {
     pub async fn connect(
         config: JetstreamConfig,
@@ -24,7 +30,7 @@ impl Jetstream {
         })
     }
 
-    pub async fn recv(&mut self) -> anyhow::Result<(string::Did, Box<post::Record>)> {
+    pub async fn recv(&mut self) -> anyhow::Result<PostInfo> {
         loop {
             let event = self.receiver.recv_async().await?;
             if let Commit(CommitEvent::Create { info, commit }) = event {
@@ -36,7 +42,11 @@ impl Jetstream {
                         Some(languages) => {
                             if languages.contains(&self.language) {
                                 self.count += 1;
-                                return Ok((info.did, record));
+                                return Ok(PostInfo {
+                                    did: info.did,
+                                    rkey: commit.info.rkey,
+                                    record,
+                                });
                             } else {
                                 continue;
                             }
