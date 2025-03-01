@@ -17,12 +17,6 @@ pub struct Jetstream {
     count: usize,
 }
 
-pub struct PostInfo {
-    pub did: string::Did,
-    pub rkey: String,
-    pub text: String,
-}
-
 impl Jetstream {
     pub async fn connect(
         config: JetstreamConfig,
@@ -36,7 +30,7 @@ impl Jetstream {
         })
     }
 
-    pub async fn recv(&mut self) -> anyhow::Result<PostInfo> {
+    pub async fn recv(&mut self) -> anyhow::Result<PostData> {
         loop {
             let event = self.receiver.recv_async().await?;
             if let Commit(CommitEvent::Create { info, commit }) = event {
@@ -61,7 +55,7 @@ impl Jetstream {
                                 } else {
                                     take(&mut record.text)
                                 };
-                                return Ok(PostInfo {
+                                return Ok(PostData {
                                     did: info.did,
                                     rkey: commit.info.rkey,
                                     text,
@@ -79,5 +73,21 @@ impl Jetstream {
 
     pub fn count(&self) -> usize {
         self.count
+    }
+}
+
+pub struct PostData {
+    did: string::Did,
+    rkey: String,
+    pub text: String,
+}
+
+impl PostData {
+    pub fn url(&self) -> String {
+        format!(
+            "https://bsky.app/profile/{}/post/{}",
+            self.did.as_str(),
+            self.rkey
+        )
     }
 }

@@ -13,10 +13,10 @@ use std::{
 };
 use tokenizers::Tokenizer;
 
-use crate::jetstream::PostInfo;
+use crate::jetstream::PostData;
 
 pub struct Embeddings {
-    tx: Sender<PostInfo>,
+    tx: Sender<PostData>,
     count: Arc<AtomicUsize>,
 }
 
@@ -33,7 +33,7 @@ impl Embeddings {
 
         let query = Arc::new(embedder.embed(query.as_ref())?);
         let post_count = Arc::new(AtomicUsize::new(0));
-        let (tx, rx) = flume::unbounded::<PostInfo>();
+        let (tx, rx) = flume::unbounded::<PostData>();
 
         for _ in 0..thread_count {
             let embedder = embedder.clone();
@@ -46,12 +46,7 @@ impl Embeddings {
                         Ok(embedding) => match cosine_similarity(&query, &embedding) {
                             Ok(similarity) => {
                                 if similarity > threshold {
-                                    println!(
-                                        "\n{}\nhttps://bsky.app/profile/{}/post/{}",
-                                        post.text,
-                                        post.did.as_str(),
-                                        post.rkey,
-                                    );
+                                    println!("\n{}\n{}", post.text, post.url(),);
                                 }
                             }
                             Err(e) => eprintln!("Error calculating cosine similarity: {}", e),
@@ -72,7 +67,7 @@ impl Embeddings {
         self.count.load(Ordering::Relaxed)
     }
 
-    pub fn add_post(&self, post: PostInfo) -> anyhow::Result<()> {
+    pub fn add_post(&self, post: PostData) -> anyhow::Result<()> {
         self.tx.send(post)?;
         Ok(())
     }
