@@ -15,12 +15,12 @@ use tokenizers::Tokenizer;
 
 use crate::jetstream::PostData;
 
-pub struct Embeddings {
+pub struct PostEmbedder {
     tx: Sender<PostData>,
     count: Arc<AtomicUsize>,
 }
 
-impl Embeddings {
+impl PostEmbedder {
     pub fn try_new<S>(query: S, threshold: f32) -> anyhow::Result<Self>
     where
         S: AsRef<str> + Send + Sync,
@@ -174,4 +174,33 @@ fn cosine_similarity(a: &Tensor, b: &Tensor) -> Result<f32> {
     let sum_a = (a * a)?.sum_all()?.to_scalar::<f32>()?;
     let sum_b = (b * b)?.sum_all()?.to_scalar::<f32>()?;
     Ok(sum_ab / (sum_a * sum_b).sqrt())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_embed_similarity() -> Result<()> {
+        let embedder = Embedder::try_new()?;
+
+        let text1 = "This is a test sentence about artificial intelligence.";
+        let text2 = "AI and machine learning are fascinating topics.";
+        let text3 = "The weather is nice today.";
+
+        let embedding1 = embedder.embed(text1)?;
+        let embedding2 = embedder.embed(text2)?;
+        let embedding3 = embedder.embed(text3)?;
+
+        let similarity12 = cosine_similarity(&embedding1, &embedding2)?;
+        let similarity13 = cosine_similarity(&embedding1, &embedding3)?;
+
+        println!("Similarity between related texts: {}", similarity12);
+        println!("Similarity between unrelated texts: {}", similarity13);
+
+        // Related texts should have higher similarity
+        assert!(similarity12 > similarity13);
+
+        Ok(())
+    }
 }
