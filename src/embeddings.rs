@@ -76,13 +76,13 @@ impl Embeddings {
             let rx = rx.clone();
             thread::spawn(move || {
                 while let Ok(post) = rx.recv() {
-                    match embed(&model, &tokenizer, &post.record.text, &device) {
+                    match embed(&model, &tokenizer, &post.text, &device) {
                         Ok(embedding) => match cosine_similarity(&query, &embedding) {
                             Ok(similarity) => {
                                 if similarity > threshold {
                                     println!(
                                         "\n{}\nhttps://bsky.app/profile/{}/post/{}",
-                                        post.record.text,
+                                        post.text,
                                         post.did.as_str(),
                                         post.rkey,
                                     );
@@ -132,9 +132,21 @@ fn embed(
 
     let embeddings = model.forward(&token_ids, &attention_mask)?;
 
-    // [CLS] token
-    let cls_embedding = embeddings.get(0)?.get(0)?;
-    normalize_l2(&cls_embedding)
+    // Mean pooling
+    let (_n_sentence, _n_tokens, hidden_size) = embeddings.dims3()?;
+    // Use attention mask to only average over real tokens
+    let expanded_mask = attention_mask
+        .unsqueeze(2)?
+        .expand(&[embeddings.dim(0)?, embeddings.dim(1)?, embeddings.dim(2)?])?
+        .to_dtype(embeddings.dtype())?;
+    let mask_sum = expanded_mask.sum_all()?;
+    if mask_sum.to_vec0::<f32>()? < 1e-10 {
+        return Err(anyhow::anyhow!("Attention mask sum too close to zero"));
+    }
+    let mean_pooled = embeddings.mul(&expanded_mask)?.sum(1)?.div(&mask_sum)?;
+    // Normalize
+    let normalized = normalize_l2(&mean_pooled)?;
+    Ok(normalized.reshape((hidden_size,))?)
 }
 
 pub fn normalize_l2(v: &Tensor) -> Result<Tensor, anyhow::Error> {
