@@ -1,7 +1,9 @@
 use atrium_api::types::string::{self};
 use clap::Parser;
 use jetstream_oxide::{JetstreamCompression, JetstreamConfig};
-use skybed::{Jetstream, LOG_COUNT, PostEmbedder};
+use skybed::{Jetstream, PostEmbedder};
+
+pub const LAG_COUNT: usize = 1000;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -28,6 +30,7 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let language = string::Language::new(args.language).map_err(|e| anyhow::anyhow!("{}", e))?;
     let embedder = PostEmbedder::try_new(args.query, args.threshold)?;
+    let mut lag: usize = LAG_COUNT;
 
     let dids = args.did.unwrap_or_default();
     println!("Listening for '{:?}' events on DIDs: {:?}", args.nsid, dids);
@@ -39,13 +42,12 @@ async fn main() -> anyhow::Result<()> {
     };
     let mut jetstream = Jetstream::connect(config, language).await?;
     while let Ok(post) = jetstream.recv().await {
-        if jetstream.count() % LOG_COUNT == 0 {
-            eprintln!("{} posts", jetstream.count());
-        }
         embedder.add_post(post)?;
-        let count = embedder.count();
-        if count % LOG_COUNT == 0 {
-            eprintln!("{} embeddings", count);
+        let post_count = jetstream.count();
+        let embed_count = embedder.count();
+        if post_count - embed_count > lag {
+            lag = (post_count - embed_count) + LAG_COUNT;
+            eprintln!("lagging - {} posts, {} embeddings", post_count, embed_count);
         }
     }
     Ok(())
