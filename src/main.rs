@@ -18,7 +18,7 @@ struct Args {
     #[arg(short, long, default_value = "en")]
     language: String,
     /// The threshold for the similarity score.
-    #[arg(short, long, default_value = "0.6")]
+    #[arg(short, long, default_value = "0.3")]
     threshold: f32,
     /// The query to search for.
     #[arg()]
