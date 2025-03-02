@@ -68,43 +68,24 @@ impl Embedder {
 
         let embeddings = self.model.forward(&token_ids, &attention_mask)?;
 
-        // Mean pooling
-        let (_batch_size, _n_tokens, hidden_size) = embeddings.dims3()?;
+        // Average the last hidden states of all tokens
+        // This is a simple way to get a sentence embedding
+        let embeddings = embeddings.squeeze(0)?; // Remove batch dimension
 
-        // Use attention mask to only average over real tokens
-        let expanded_mask = attention_mask
-            .unsqueeze(2)?
-            .expand(&[embeddings.dim(0)?, embeddings.dim(1)?, embeddings.dim(2)?])?
-            .to_dtype(embeddings.dtype())?;
-
-        // Check if mask sum is too small
-        let mask_sum = expanded_mask.sum_all()?;
-        let mask_sum_value = mask_sum.to_scalar::<f32>()?;
-        if mask_sum_value < 1e-10 {
-            return Err(anyhow::anyhow!("Attention mask sum too close to zero"));
-        }
-
-        // Calculate mean pooled embedding
-        let sum_masked = embeddings.mul(&expanded_mask)?.sum(1)?;
-        // The mask sum should be summed along the sequence dimension for each feature
-        let mask_sum_per_feature = expanded_mask.sum(1)?;
-        // Now both tensors have shape [batch_size, hidden_size]
-        let mean_pooled = sum_masked.broadcast_div(&mask_sum_per_feature)?;
+        // Simple mean across all token embeddings
+        let mean_embedding = embeddings.mean(0)?;
 
         // Normalize
-        let normalized = Self::normalize_l2(&mean_pooled)?;
-        Ok(normalized.reshape((hidden_size,))?)
+        Embedder::normalize_l2(&mean_embedding)
     }
 
     fn normalize_l2(v: &Tensor) -> Result<Tensor, anyhow::Error> {
-        Ok(v.broadcast_div(&v.sqr()?.sum_keepdim(1)?.sqrt()?)?)
+        let norm = v.sqr()?.sum(0)?.sqrt()?;
+        Ok(v.broadcast_div(&norm)?)
     }
 
-    pub fn cosine_similarity(a: &Tensor, b: &Tensor) -> Result<f32> {
-        let sum_ab = (a * b)?.sum_all()?.to_scalar::<f32>()?;
-        let sum_a = (a * a)?.sum_all()?.to_scalar::<f32>()?;
-        let sum_b = (b * b)?.sum_all()?.to_scalar::<f32>()?;
-        Ok(sum_ab / (sum_a * sum_b).sqrt())
+    pub fn cosine_similarity(a: &Tensor, b: &Tensor) -> anyhow::Result<f32> {
+        Ok((a * b)?.sum_all()?.to_scalar::<f32>()?)
     }
 }
 
@@ -132,6 +113,63 @@ mod tests {
 
         // Related texts should have higher similarity
         assert!(similarity12 > similarity13);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_identical_similarity() -> Result<()> {
+        let embedder = Embedder::try_new()?;
+
+        let text1 = "The weather is nice today.";
+        let text2 = "The weather is nice today.";
+
+        let embedding1 = embedder.embed(text1)?;
+        let embedding2 = embedder.embed(text2)?;
+
+        let similarity = Embedder::cosine_similarity(&embedding1, &embedding2)?;
+
+        println!("Similarity between identical texts: {}", similarity);
+
+        assert!(similarity == 1.0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_nearly_identical_similarity() -> Result<()> {
+        let embedder = Embedder::try_new()?;
+
+        let text1 = "The weather is nice today.";
+        let text2 = "The weather is really nice today.";
+
+        let embedding1 = embedder.embed(text1)?;
+        let embedding2 = embedder.embed(text2)?;
+
+        let similarity = Embedder::cosine_similarity(&embedding1, &embedding2)?;
+
+        println!("Similarity between nearly identical texts: {}", similarity);
+
+        assert!(similarity >= 0.9);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_unrelated_similarity() -> Result<()> {
+        let embedder = Embedder::try_new()?;
+
+        let text1 = "US federal government layoffs";
+        let text2 = "I like pizza";
+
+        let embedding1 = embedder.embed(text1)?;
+        let embedding2 = embedder.embed(text2)?;
+
+        let similarity = Embedder::cosine_similarity(&embedding1, &embedding2)?;
+
+        println!("Similarity between unrelated texts: {}", similarity);
+
+        assert!(similarity < 0.5);
 
         Ok(())
     }
