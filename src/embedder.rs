@@ -1,14 +1,13 @@
 use anyhow::Error as E;
 use candle_core::{Device, Tensor};
 use candle_nn::var_builder::VarBuilder;
+use candle_transformers::models::bert::{BertModel, Config, DTYPE};
 use hf_hub::{Repo, RepoType, api::sync::Api};
-use mpnet_rs::mpnet::{MPNetConfig, MPNetModel, MPNetPooler, PoolingConfig};
 use tokenizers::Tokenizer;
 
 pub(crate) struct Embedder {
-    model: MPNetModel,
+    model: BertModel,
     tokenizer: Tokenizer,
-    pooler: MPNetPooler,
     device: Device,
 }
 
@@ -16,7 +15,7 @@ impl Embedder {
     pub fn try_new() -> anyhow::Result<Self> {
         let api = Api::new()?;
         let repo = api.repo(Repo::with_revision(
-            "sentence-transformers/all-mpnet-base-v2".to_string(),
+            "sentence-transformers/all-MiniLM-L6-v2".to_string(),
             RepoType::Model,
             "main".to_string(),
         ));
@@ -25,40 +24,53 @@ impl Embedder {
         let config_filename = repo.get("config.json")?;
         let weights_filename = repo.get("model.safetensors")?;
 
-        let config = MPNetConfig::load(&config_filename)?;
+        let config = std::fs::read_to_string(config_filename)?;
+        let config: Config = serde_json::from_str(&config)?;
 
         // https://github.com/huggingface/candle/issues/2637
         // let device = Device::new_metal(0)?;
         let device = Device::Cpu; //XXX test metal/cuda - has thread issues
-        let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(
-                &[weights_filename],
-                candle_core::DType::F32,
-                &device,
-            )?
-        };
+        let vb =
+            unsafe { VarBuilder::from_mmaped_safetensors(&[weights_filename], DTYPE, &device)? };
 
-        let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
-        let pooler = MPNetPooler::load(vb.clone(), &PoolingConfig::default())?;
-        let model = MPNetModel::load(vb, &config)?;
+        let mut tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
+        tokenizer
+            .with_padding(None)
+            .with_truncation(None)
+            .map_err(E::msg)?;
+        let model = BertModel::load(vb, &config)?;
 
         Ok(Self {
             model,
             tokenizer,
-            pooler,
             device,
         })
     }
 
     pub fn embed(&self, input: &str) -> anyhow::Result<Tensor> {
         let tokens = self.tokenizer.encode(input, true).map_err(E::msg)?;
+
         let token_ids = tokens.get_ids().to_vec();
+        let token_ids = Tensor::new(token_ids.as_slice(), &self.device)?.unsqueeze(0)?;
 
-        let token_ids = Tensor::new(token_ids.as_slice(), &self.device)?;
-        let token_ids = token_ids.unsqueeze(0)?;
+        let attention_mask = tokens.get_attention_mask().to_vec();
+        let attention_mask = Tensor::new(attention_mask.as_slice(), &self.device)?.unsqueeze(0)?;
 
-        let embeddings = self.model.forward(&token_ids, false)?;
-        Ok(self.pooler.forward(&embeddings)?)
+        let token_type_ids = token_ids.zeros_like()?;
+
+        let embeddings = self
+            .model
+            .forward(&token_ids, &token_type_ids, Some(&attention_mask))?;
+
+        // Apply some avg-pooling by taking the mean embedding value for all tokens (including padding)
+        let (_n_sentence, n_tokens, _hidden_size) = embeddings.dims3()?;
+        let embeddings = (embeddings.sum(1)? / (n_tokens as f64))?;
+
+        Embedder::normalize_l2(&embeddings)
+    }
+
+    fn normalize_l2(v: &Tensor) -> anyhow::Result<Tensor> {
+        Ok(v.broadcast_div(&v.sqr()?.sum_keepdim(1)?.sqrt()?)?)
     }
 
     pub fn cosine_similarity(a: &Tensor, b: &Tensor) -> anyhow::Result<f32> {
