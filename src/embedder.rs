@@ -1,13 +1,14 @@
-use anyhow::{Error as E, Result};
+use anyhow::Error as E;
 use candle_core::{Device, Tensor};
-use candle_nn::VarBuilder;
-use candle_transformers::models::modernbert;
+use candle_nn::var_builder::VarBuilder;
 use hf_hub::{Repo, RepoType, api::sync::Api};
+use mpnet_rs::mpnet::{MPNetConfig, MPNetModel, MPNetPooler, PoolingConfig};
 use tokenizers::Tokenizer;
 
 pub(crate) struct Embedder {
-    model: modernbert::ModernBert,
+    model: MPNetModel,
     tokenizer: Tokenizer,
+    pooler: MPNetPooler,
     device: Device,
 }
 
@@ -15,7 +16,7 @@ impl Embedder {
     pub fn try_new() -> anyhow::Result<Self> {
         let api = Api::new()?;
         let repo = api.repo(Repo::with_revision(
-            "answerdotai/ModernBERT-large".to_string(),
+            "sentence-transformers/all-mpnet-base-v2".to_string(),
             RepoType::Model,
             "main".to_string(),
         ));
@@ -24,8 +25,7 @@ impl Embedder {
         let config_filename = repo.get("config.json")?;
         let weights_filename = repo.get("model.safetensors")?;
 
-        let config = std::fs::read_to_string(config_filename)?;
-        let config: modernbert::Config = serde_json::from_str(&config)?;
+        let config = MPNetConfig::load(&config_filename)?;
 
         // https://github.com/huggingface/candle/issues/2637
         // let device = Device::new_metal(0)?;
@@ -38,17 +38,14 @@ impl Embedder {
             )?
         };
 
-        let mut tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
-        tokenizer
-            .with_padding(None)
-            .with_truncation(None)
-            .map_err(E::msg)?;
-
-        let model = modernbert::ModernBert::load(vb, &config)?;
+        let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
+        let pooler = MPNetPooler::load(vb.clone(), &PoolingConfig::default())?;
+        let model = MPNetModel::load(vb, &config)?;
 
         Ok(Self {
             model,
             tokenizer,
+            pooler,
             device,
         })
     }
@@ -56,32 +53,12 @@ impl Embedder {
     pub fn embed(&self, input: &str) -> anyhow::Result<Tensor> {
         let tokens = self.tokenizer.encode(input, true).map_err(E::msg)?;
         let token_ids = tokens.get_ids().to_vec();
-        let attention_mask = tokens.get_attention_mask().to_vec();
 
-        // Convert to tensors
         let token_ids = Tensor::new(token_ids.as_slice(), &self.device)?;
-        let attention_mask = Tensor::new(attention_mask.as_slice(), &self.device)?;
-
-        // Add batch dimension
         let token_ids = token_ids.unsqueeze(0)?;
-        let attention_mask = attention_mask.unsqueeze(0)?;
 
-        let embeddings = self.model.forward(&token_ids, &attention_mask)?;
-
-        // Average the last hidden states of all tokens
-        // This is a simple way to get a sentence embedding
-        let embeddings = embeddings.squeeze(0)?; // Remove batch dimension
-
-        // Simple mean across all token embeddings
-        let mean_embedding = embeddings.mean(0)?;
-
-        // Normalize
-        Embedder::normalize_l2(&mean_embedding)
-    }
-
-    fn normalize_l2(v: &Tensor) -> Result<Tensor, anyhow::Error> {
-        let norm = v.sqr()?.sum(0)?.sqrt()?;
-        Ok(v.broadcast_div(&norm)?)
+        let embeddings = self.model.forward(&token_ids, false)?;
+        Ok(self.pooler.forward(&embeddings)?)
     }
 
     pub fn cosine_similarity(a: &Tensor, b: &Tensor) -> anyhow::Result<f32> {
@@ -94,7 +71,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_embed_similarity() -> Result<()> {
+    fn test_embed_similarity() -> anyhow::Result<()> {
         let embedder = Embedder::try_new()?;
 
         let text1 = "This is a test sentence about artificial intelligence.";
@@ -118,7 +95,7 @@ mod tests {
     }
 
     #[test]
-    fn test_identical_similarity() -> Result<()> {
+    fn test_identical_similarity() -> anyhow::Result<()> {
         let embedder = Embedder::try_new()?;
 
         let text1 = "The weather is nice today.";
@@ -137,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nearly_identical_similarity() -> Result<()> {
+    fn test_nearly_identical_similarity() -> anyhow::Result<()> {
         let embedder = Embedder::try_new()?;
 
         let text1 = "The weather is nice today.";
@@ -156,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unrelated_similarity() -> Result<()> {
+    fn test_unrelated_similarity() -> anyhow::Result<()> {
         let embedder = Embedder::try_new()?;
 
         let text1 = "US federal government layoffs";
