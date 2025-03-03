@@ -1,7 +1,7 @@
 use atrium_api::types::string::{self};
 use clap::Parser;
 use jetstream_oxide::{JetstreamCompression, JetstreamConfig};
-use skybed::{Jetstream, PostEmbedder};
+use skybedding::{Jetstream, PostEmbedder};
 
 pub const LAG_COUNT: usize = 1000;
 
