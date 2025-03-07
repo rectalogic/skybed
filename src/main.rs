@@ -8,6 +8,9 @@ pub const LAG_COUNT: usize = 1000;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
+    /// The model to use for embedding.
+    #[arg(short, long, default_value = "sentence-transformers/all-MiniLM-L6-v2")]
+    model: String,
     /// The DIDs to listen for events on, if not provided we will listen for all DIDs.
     #[arg(short, long)]
     did: Option<Vec<string::Did>>,
@@ -29,7 +32,7 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let language = string::Language::new(args.language).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let embedder = PostEmbedder::try_new(args.query, args.threshold)?;
+    let embedder = PostEmbedder::try_new(args.query, args.model, args.threshold)?;
     let mut lag: usize = LAG_COUNT;
 
     let dids = args.did.unwrap_or_default();

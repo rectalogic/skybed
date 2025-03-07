@@ -12,10 +12,13 @@ pub(crate) struct Embedder {
 }
 
 impl Embedder {
-    pub fn try_new() -> anyhow::Result<Self> {
+    pub fn try_new<S>(model: S) -> anyhow::Result<Self>
+    where
+        S: AsRef<str> + Send + Sync,
+    {
         let api = Api::new()?;
         let repo = api.repo(Repo::with_revision(
-            "sentence-transformers/all-MiniLM-L6-v2".to_string(),
+            model.as_ref().to_string(),
             RepoType::Model,
             "main".to_string(),
         ));
@@ -84,7 +87,7 @@ mod tests {
 
     #[test]
     fn test_embed_similarity() -> anyhow::Result<()> {
-        let embedder = Embedder::try_new()?;
+        let embedder = Embedder::try_new("sentence-transformers/all-MiniLM-L6-v2")?;
 
         let text1 = "This is a test sentence about artificial intelligence.";
         let text2 = "AI and machine learning are fascinating topics.";
@@ -108,7 +111,7 @@ mod tests {
 
     #[test]
     fn test_identical_similarity() -> anyhow::Result<()> {
-        let embedder = Embedder::try_new()?;
+        let embedder = Embedder::try_new("sentence-transformers/all-MiniLM-L6-v2")?;
 
         let text1 = "The weather is nice today.";
         let text2 = "The weather is nice today.";
@@ -127,7 +130,7 @@ mod tests {
 
     #[test]
     fn test_nearly_identical_similarity() -> anyhow::Result<()> {
-        let embedder = Embedder::try_new()?;
+        let embedder = Embedder::try_new("sentence-transformers/all-MiniLM-L6-v2")?;
 
         let text1 = "The weather is nice today.";
         let text2 = "The weather is really nice today.";
@@ -146,7 +149,7 @@ mod tests {
 
     #[test]
     fn test_unrelated_similarity() -> anyhow::Result<()> {
-        let embedder = Embedder::try_new()?;
+        let embedder = Embedder::try_new("sentence-transformers/all-MiniLM-L6-v2")?;
 
         let text1 = "US federal government layoffs";
         let text2 = "I like pizza";

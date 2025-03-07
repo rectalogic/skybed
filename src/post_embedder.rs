@@ -16,11 +16,11 @@ pub struct PostEmbedder {
 }
 
 impl PostEmbedder {
-    pub fn try_new<S>(query: S, threshold: f32) -> anyhow::Result<Self>
+    pub fn try_new<S>(query: S, model: S, threshold: f32) -> anyhow::Result<Self>
     where
         S: AsRef<str> + Send + Sync,
     {
-        let embedder = Arc::new(Embedder::try_new()?);
+        let embedder = Arc::new(Embedder::try_new(model)?);
 
         let thread_count = thread::available_parallelism()
             .map(|p| p.get())
